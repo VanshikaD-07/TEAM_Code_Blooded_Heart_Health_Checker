@@ -63,3 +63,30 @@ float WEIGHT[K]    = {0,0,0,0,0,0,0,0,0,0,0,0};
 
 const bool PRETTY_PRINT = true;
 const bool LOG_FAILED_ROWS = false;
+
+// ---------------- Buffers ----------------
+uint32_t bufRed[N], bufIR[N];
+float fRed[N], fIr[N], scratch[N];
+float gPos[MAX_BEATS], gRaw[MAX_BEATS];
+bool  gValid[MAX_BEATS];
+float gRise[MAX_BEATS], gW50[MAX_BEATS], gArea[MAX_BEATS], gBA[MAX_BEATS];
+
+// ---------------- State ----------------
+int      count = 0, settle = 0;
+bool     needRemoval = false, waitShown = false;
+uint32_t holdUntil = 0, lastButton = 0;
+int      subjectSex = SEX_UNSET;
+String   subjectId = "none";
+float    refHb = NAN;
+String   cmdBuf;
+
+struct Result {
+  uint16_t failMask;
+  bool  ok;
+  float redDc, irDc, dcRatio, redAc, irAc, Rred, Rir, Rratio, spo2, pi;
+  float hr, sdnn, rmssd;
+  int   nBeats, nNN;
+  float rise, width50, areaNorm, ba, delayMs;
+  float snr, corr, drift;
+  float prior, hb;
+};
