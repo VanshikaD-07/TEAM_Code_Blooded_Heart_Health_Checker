@@ -61,3 +61,5 @@ float FEAT_MEAN[K] = {0,0,0,0,0,0,0,0,0,0,0,0};
 float FEAT_SD[K]   = {1,1,1,1,1,1,1,1,1,1,1,1};
 float WEIGHT[K]    = {0,0,0,0,0,0,0,0,0,0,0,0};
 
+const bool PRETTY_PRINT = true;
+const bool LOG_FAILED_ROWS = false;
