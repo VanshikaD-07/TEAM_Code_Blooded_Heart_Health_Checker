@@ -147,3 +147,88 @@ float prepareSignal(const uint32_t *x, float *f, float dc, float &driftPct, floa
   driftPct = 100.0f * (bMax - bMin) / dc;
   return (float)sqrt(sq / n);
 }
+
+// Dominant pulse period (in samples) by autocorrelation over lags 0.3-1.5 s (40-200 bpm).
+// The full-beat period correlates better with itself than the half-beat spacing between
+// the systolic peak and the smaller diastolic bump, so this does not lock onto the bump.
+int estimatePeriod(const float *f) {
+  const int LMIN = 30, LMAX = 150;
+  double best = -1e30;
+  int bestLag = LMIN;
+  for (int lag = LMIN; lag <= LMAX; lag++) {
+    double s = 0;
+    for (int i = EDGE; i < N - EDGE - LMAX; i++) s += (double)f[i] * f[i + lag];
+    if (s > best) { best = s; bestLag = lag; }
+  }
+  return bestLag;
+}
+
+// Peak detection on the filtered IR pulse. Window and refractory time scale with the
+// estimated period; parabolic interpolation gives sub-sample peak positions.
+int findPeaks(const float *f, float rms, float *pos, int period) {
+  int W = (int)(0.35f * period);
+  if (W < 10) W = 10;
+  const int MIN_DIST = (int)(0.6f * period);
+  float thr = 0.5f * rms;
+  int n = 0, lastIdx = -1000;
+  for (int i = EDGE; i < N - EDGE; i++) {
+    float v = f[i];
+    if (v < thr) continue;
+    bool isMax = true;
+    for (int k = 1; k <= W; k++) {
+      if (f[i - k] > v || f[i + k] >= v) { isMax = false; break; }
+    }
+    if (!isMax) continue;
+    float y0 = f[i - 1], y1 = f[i], y2 = f[i + 1];
+    float den = y0 - 2 * y1 + y2;
+    float delta = (den != 0) ? 0.5f * (y0 - y2) / den : 0;
+    if (delta > 1) delta = 1;
+    if (delta < -1) delta = -1;
+    float p = i + delta;
+    if (i - lastIdx < MIN_DIST) {
+      if (n > 0 && v > f[lastIdx]) { pos[n - 1] = p; lastIdx = i; }
+      continue;
+    }
+    if (n < MAX_BEATS) { pos[n++] = p; lastIdx = i; }
+  }
+  // Prominence filter: drop peaks much smaller than the typical peak (diastolic bumps, noise)
+  if (n >= 4) {
+    float h[MAX_BEATS];
+    for (int k = 0; k < n; k++) h[k] = f[(int)roundf(pos[k])];
+    float mh = medianOf(h, n);
+    int m = 0;
+    for (int k = 0; k < n; k++) if (h[k] >= 0.5f * mh) pos[m++] = pos[k];
+    n = m;
+  }
+  return n;
+}
+
+// Red-vs-IR delay by cross-correlation. Positive = IR waveform lags red.
+float redIrDelay(const float *fr, const float *fi, float &corrPeak) {
+  const int L = 10;
+  double c[2 * L + 1], er = 0, ei = 0;
+  for (int i = EDGE; i < N - EDGE; i++) { er += (double)fr[i] * fr[i]; ei += (double)fi[i] * fi[i]; }
+  int best = 0;
+  for (int lag = -L; lag <= L; lag++) {
+    double s = 0;
+    for (int i = EDGE; i < N - EDGE; i++) s += (double)fr[i] * fi[i + lag];
+    c[lag + L] = s;
+    if (s > c[best]) best = lag + L;
+  }
+  corrPeak = (float)(c[best] / sqrt(er * ei + 1e-9));
+  float delta = 0;
+  if (best > 0 && best < 2 * L) {
+    double den = c[best - 1] - 2 * c[best] + c[best + 1];
+    if (den != 0) delta = (float)(0.5 * (c[best - 1] - c[best + 1]) / den);
+  }
+  return ((best - L) + delta) * DT_MS;
+}
+
+float computeHb(const float *feat, float &prior) {
+  prior = (subjectSex == SEX_MALE) ? BASE_HB_MALE : BASE_HB_FEMALE;
+  float hb = prior;
+  for (int k = 0; k < K; k++) hb += WEIGHT[k] * (feat[k] - FEAT_MEAN[k]) / FEAT_SD[k];
+  if (hb < 5) hb = 5;
+  if (hb > 20) hb = 20;
+  return hb;
+}
