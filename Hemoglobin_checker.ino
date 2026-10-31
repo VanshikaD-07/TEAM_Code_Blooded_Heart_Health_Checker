@@ -379,3 +379,251 @@ Result analyze() {
   }
   return r;
 }
+
+// =====================================================================
+// Output
+// =====================================================================
+void printFailReasons(uint16_t m) {
+  if (m & F_DC)        Serial.println("  - DC level out of range: adjust AMP_RED/AMP_IR or finger contact");
+  if (m & F_PERF)      Serial.println("  - Pulse too weak (perfusion index low): warm finger, lighter pressure");
+  if (m & F_SNR)       Serial.println("  - Too noisy: block room light, keep finger still");
+  if (m & F_CORR)      Serial.println("  - Red and IR waveforms disagree: motion or poor contact");
+  if (m & F_DRIFT)     Serial.println("  - Baseline drifting: pressure changed or finger moved");
+  if (m & F_BEATS)     Serial.println("  - Too few heartbeats detected");
+  if (m & F_INTERVALS) Serial.println("  - Beat intervals irregular or too few valid for HRV");
+  if (m & F_WAVE)      Serial.println("  - Not enough clean beats for waveform features");
+}
+
+void csvNum(float v, int dec, bool last = false) {
+  if (!isnan(v)) Serial.print(v, dec);
+  if (!last) Serial.print(',');
+}
+
+void printCsvHeader() {
+  Serial.println("id,sex,ref_hb,ts_ms,quality_ok,fail_mask,hr_bpm,rmssd_ms,sdnn_ms,spo2,pi_pct,"
+                 "red_dc,ir_dc,dc_ratio,R_red,R_ir,R_ratio,rise_ms,width50_ms,area_norm,ba_ratio,"
+                 "delay_ms,snr,corr,drift_pct,n_beats,n_nn,hb_est");
+}
+
+void printCsvRow(const Result &r) {
+  Serial.print(subjectId); Serial.print(',');
+  Serial.print(sexChar()); Serial.print(',');
+  csvNum(refHb, 1);
+  Serial.print(millis()); Serial.print(',');
+  Serial.print(r.ok ? 1 : 0); Serial.print(',');
+  Serial.print(r.failMask); Serial.print(',');
+  csvNum(r.hr, 1); csvNum(r.rmssd, 1); csvNum(r.sdnn, 1); csvNum(r.spo2, 1); csvNum(r.pi, 3);
+  csvNum(r.redDc, 0); csvNum(r.irDc, 0); csvNum(r.dcRatio, 4);
+  csvNum(r.Rred, 5); csvNum(r.Rir, 5); csvNum(r.Rratio, 4);
+  csvNum(r.rise, 1); csvNum(r.width50, 1); csvNum(r.areaNorm, 4); csvNum(r.ba, 4);
+  csvNum(r.delayMs, 1); csvNum(r.snr, 1); csvNum(r.corr, 3); csvNum(r.drift, 2);
+  Serial.print(r.nBeats); Serial.print(',');
+  Serial.print(r.nNN); Serial.print(',');
+  csvNum(r.hb, 2, true);
+  Serial.println();
+}
+
+void printReport(const Result &r) {
+  if (PRETTY_PRINT) {
+    Serial.println();
+    Serial.println("========== MEASUREMENT COMPLETE ==========");
+    Serial.printf("Subject: %s   Sex: %c   Reference Hb: ", subjectId.c_str(), sexChar());
+    if (isnan(refHb)) Serial.println("not set"); else Serial.printf("%.1f g/dL\n", refHb);
+    Serial.printf("QUALITY: %s\n", r.ok ? "PASS" : "FAIL - retry");
+    if (!r.ok) printFailReasons(r.failMask);
+
+    Serial.println("\n-- Heart (from IR pulse peaks) --");
+    Serial.printf("Heart rate            : %.1f bpm\n", r.hr);
+    Serial.printf("HRV RMSSD             : %.1f ms  (beat-to-beat variability, 30 s window)\n", r.rmssd);
+    Serial.printf("HRV SDNN              : %.1f ms  (overall variability)\n", r.sdnn);
+    Serial.printf("Beats / valid intervals: %d / %d\n", r.nBeats, r.nNN);
+
+    Serial.println("\n-- Oxygen and perfusion --");
+    Serial.printf("SpO2 (approx, uncal.) : %.1f %%\n", r.spo2);
+    Serial.printf("Perfusion index (IR)  : %.3f %%  (pulse strength)\n", r.pi);
+
+    Serial.println("\n-- Light levels --");
+    Serial.printf("Red DC / IR DC        : %.0f / %.0f counts\n", r.redDc, r.irDc);
+    Serial.printf("DC ratio (red/IR)     : %.4f\n", r.dcRatio);
+    Serial.printf("AC/DC red, IR         : %.5f , %.5f\n", r.Rred, r.Rir);
+    Serial.printf("AC/DC ratio of ratios : %.4f  (R used for SpO2)\n", r.Rratio);
+
+    Serial.println("\n-- Pulse waveform (median over beats) --");
+    Serial.printf("Rise time             : %.1f ms  (foot to peak)\n", r.rise);
+    Serial.printf("Width at 50%% height   : %.1f ms\n", r.width50);
+    Serial.printf("Area index            : %.4f  (pulse fullness, 0-1)\n", r.areaNorm);
+    Serial.printf("b/a ratio             : %.4f  (2nd-derivative wave ratio)\n", r.ba);
+
+    Serial.println("\n-- Red vs IR timing --");
+    Serial.printf("IR delay vs red       : %.1f ms  (experimental; 10 ms sampling steps)\n", r.delayMs);
+
+    Serial.println("\n-- Signal quality --");
+    Serial.printf("Pulse SNR index       : %.1f   Red/IR correlation: %.3f   Baseline drift: %.2f %%\n",
+                  r.snr, r.corr, r.drift);
+
+    Serial.println("\n-- Hemoglobin --");
+    if (subjectSex == SEX_UNSET) {
+      Serial.println("Set sex first (type m or f) to get the sex-specific baseline.");
+    } else if (!MODEL_CALIBRATED) {
+      Serial.printf("NOT CALIBRATED. Sex-mean prior for %c is %.1f g/dL: a population average,\n"
+                    "not a measurement. Fit the model on volunteer data, then set WEIGHT[],\n"
+                    "FEAT_MEAN[], FEAT_SD[], BASE_HB_* and MODEL_CALIBRATED = true.\n",
+                    sexChar(), r.prior);
+    } else if (isnan(r.hb)) {
+      Serial.println("No estimate: quality check failed or a feature is missing.");
+    } else {
+      float cut = (subjectSex == SEX_MALE) ? ANEMIA_CUTOFF_MALE : ANEMIA_CUTOFF_FEMALE;
+      Serial.printf("Hb estimate: %.1f g/dL (+/- %.1f)   %s (cutoff %.1f)\n", r.hb, MODEL_MAE,
+                    r.hb < cut ? "LOW-HB RISK" : "within normal range", cut);
+    }
+    Serial.println("Screening aid only, not a diagnosis.");
+    Serial.println("\nCSV row:");
+  }
+  if (r.ok || LOG_FAILED_ROWS) printCsvRow(r);
+  else if (PRETTY_PRINT) Serial.println("(row not logged: quality failed)");
+}
+
+void showWait() {
+  oled.clearDisplay();
+  oled.setTextSize(1);
+  oled.setTextColor(SSD1306_WHITE);
+  oled.setCursor(0, 0);
+  oled.println("Place finger on");
+  oled.println("sensor, hold still");
+  oled.printf("\nSex: %c   ID: %s\n", sexChar(), subjectId.c_str());
+  if (subjectSex == SEX_UNSET) oled.println("Type m/f or press btn");
+  oled.display();
+  waitShown = true;
+}
+
+void showProgress(int sec) {
+  oled.clearDisplay();
+  oled.setCursor(0, 0);
+  oled.println("Measuring...");
+  oled.printf("Hold still %d/%d s\n", sec, WINDOW_SEC);
+  oled.display();
+  waitShown = false;
+}
+
+void showResult(const Result &r) {
+  oled.clearDisplay();
+  oled.setCursor(0, 0);
+  if (!r.ok) {
+    oled.println("QUALITY: RETRY");
+    if (r.failMask & F_DC)        oled.println("Check LED/contact");
+    if (r.failMask & F_PERF)      oled.println("Pulse too weak");
+    if (r.failMask & (F_SNR | F_CORR)) oled.println("Noisy signal");
+    if (r.failMask & F_DRIFT)     oled.println("Finger moved");
+    if (r.failMask & (F_BEATS | F_INTERVALS | F_WAVE)) oled.println("Too few clean beats");
+  } else {
+    oled.printf("HR %.0f  SpO2 %.0f%%\n", r.hr, r.spo2);
+    oled.printf("RMSSD %.0f ms\n", r.rmssd);
+    oled.printf("PI %.2f%%  Sex %c\n", r.pi, sexChar());
+    if (subjectSex == SEX_UNSET) oled.println("Set sex: m/f");
+    else if (!MODEL_CALIBRATED) oled.println("Hb: needs calibration");
+    else if (isnan(r.hb)) oled.println("Hb: n/a");
+    else {
+      float cut = (subjectSex == SEX_MALE) ? ANEMIA_CUTOFF_MALE : ANEMIA_CUTOFF_FEMALE;
+      oled.printf("Hb %.1f g/dL\n%s\n", r.hb, r.hb < cut ? "LOW-HB RISK" : "Normal range");
+    }
+  }
+  oled.println("Remove finger");
+  oled.display();
+  waitShown = false;
+}
+
+// =====================================================================
+// Input handling
+// =====================================================================
+void setSex(int s) {
+  subjectSex = s;
+  Serial.printf("Sex set to %c\n", sexChar());
+  showWait();
+}
+
+void processCmd(String s) {
+  s.trim();
+  if (s.length() == 0) return;
+  char c = tolower(s[0]);
+  if (c == 'm') setSex(SEX_MALE);
+  else if (c == 'f') setSex(SEX_FEMALE);
+  else if (c == 'r') { refHb = s.substring(1).toFloat(); Serial.printf("Reference Hb set to %.1f g/dL\n", refHb); }
+  else if (c == 'i') { subjectId = s.substring(1); subjectId.trim(); refHb = NAN;
+                       Serial.printf("Subject ID: %s (reference Hb cleared)\n", subjectId.c_str()); showWait(); }
+  else if (c == 'x') { refHb = NAN; Serial.println("Reference Hb cleared"); }
+  else Serial.println("Commands: m | f | r<Hb> | i<ID> | x");
+}
+
+void handleSerial() {
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == '\n' || c == '\r') { if (cmdBuf.length()) { processCmd(cmdBuf); cmdBuf = ""; } }
+    else if (cmdBuf.length() < 24) cmdBuf += c;
+  }
+}
+
+void handleButton() {
+  if (digitalRead(BUTTON_PIN) == LOW && millis() - lastButton > 300) {
+    lastButton = millis();
+    setSex(subjectSex == SEX_MALE ? SEX_FEMALE : SEX_MALE);
+  }
+}
+
+// =====================================================================
+void setup() {
+  Serial.begin(115200);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  Wire.begin(SDA_PIN, SCL_PIN);
+  Wire.setClock(400000);          // use 100000 if you see I2C errors
+
+  if (!oled.begin(SSD1306_SWITCHCAPVCC, 0x3C)) Serial.println("OLED not found");
+
+  if (!sensor.begin(Wire, I2C_SPEED_FAST)) {
+    Serial.println("MAX3010x not found - check wiring");
+    oled.clearDisplay(); oled.setCursor(0, 0); oled.println("Sensor not found"); oled.display();
+    while (1) delay(1000);
+  }
+  sensor.setup(60, SAMPLE_AVG, LED_MODE, SAMPLE_RATE, PULSE_WIDTH, ADC_RANGE);
+  sensor.setPulseAmplitudeRed(AMP_RED);
+  sensor.setPulseAmplitudeIR(AMP_IR);
+
+  Serial.println("Hb screening prototype ready. Commands: m | f | r<Hb> | i<ID> | x");
+  printCsvHeader();
+  showWait();
+}
+
+void loop() {
+  handleSerial();
+  handleButton();
+  sensor.check();
+
+  while (sensor.available()) {
+    uint32_t r  = sensor.getFIFORed();
+    uint32_t ir = sensor.getFIFOIR();
+    sensor.nextSample();
+
+    if (ir < FINGER_THRESH) {            // no finger
+      if (needRemoval) needRemoval = false;
+      if (count > 0 || settle > 0) { count = 0; settle = 0; waitShown = false; }
+      if (!waitShown && millis() > holdUntil) showWait();
+      continue;
+    }
+    if (needRemoval) continue;           // result is showing; wait for finger removal
+    if (settle < SETTLE_SAMPLES) { settle++; continue; }
+
+    bufRed[count] = r; bufIR[count] = ir; count++;
+    if (count % FS == 0 && count < N) showProgress(count / FS);
+
+    if (count >= N) {
+      showProgress(WINDOW_SEC);
+      Result res = analyze();
+      printReport(res);
+      showResult(res);
+      count = 0; settle = 0;
+      needRemoval = true;
+      holdUntil = millis() + 30000;       // keep result on screen 8 s after removal
+      sensor.clearFIFO();
+      break;
+    }
+  }
+}
