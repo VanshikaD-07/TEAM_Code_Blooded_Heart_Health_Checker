@@ -232,3 +232,150 @@ float computeHb(const float *feat, float &prior) {
   if (hb > 20) hb = 20;
   return hb;
 }
+
+// =====================================================================
+// Full analysis of one 30 s window
+// =====================================================================
+Result analyze() {
+  Result r;
+  memset(&r, 0, sizeof(r));
+  r.hr = r.sdnn = r.rmssd = r.rise = r.width50 = r.areaNorm = r.ba = NAN;
+  r.prior = r.hb = NAN;
+
+  double sr = 0, si = 0;
+  for (int i = 0; i < N; i++) { sr += bufRed[i]; si += bufIR[i]; }
+  r.redDc = (float)(sr / N);
+  r.irDc  = (float)(si / N);
+  r.dcRatio = r.redDc / r.irDc;
+  if (r.redDc < DC_MIN || r.redDc > DC_MAX || r.irDc < DC_MIN || r.irDc > DC_MAX) r.failMask |= F_DC;
+
+  float driftR, hfR, hfI;
+  r.redAc = prepareSignal(bufRed, fRed, r.redDc, driftR, hfR);
+  r.irAc  = prepareSignal(bufIR, fIr, r.irDc, r.drift, hfI);
+  r.Rred = r.redAc / r.redDc;
+  r.Rir  = r.irAc / r.irDc;
+  r.Rratio = r.Rred / r.Rir;
+  r.pi = 100.0f * r.Rir;
+  r.snr = r.irAc / (hfI + 1e-6f);
+
+  // SpO2: standard empirical curve for R = (ACred/DCred)/(ACir/DCir). Uncalibrated estimate.
+  float s = -45.060f * r.Rratio * r.Rratio + 30.354f * r.Rratio + 94.845f;
+  r.spo2 = s > 100 ? 100 : (s < 70 ? 70 : s);
+
+  if (r.pi < PI_MIN_PCT) r.failMask |= F_PERF;
+  if (r.snr < SNR_MIN) r.failMask |= F_SNR;
+  if (r.drift > DRIFT_MAX_PCT || driftR > DRIFT_MAX_PCT) r.failMask |= F_DRIFT;
+
+  r.delayMs = redIrDelay(fRed, fIr, r.corr);
+  if (r.corr < CORR_MIN) r.failMask |= F_CORR;
+
+  // ---- Beats, heart rate, HRV ----
+  int period = estimatePeriod(fIr);
+  float hrAuto = 60.0f * FS / period;
+  int nPeaks = findPeaks(fIr, r.irAc, gPos, period);
+  r.nBeats = nPeaks;
+  if (nPeaks < 4) {
+    r.failMask |= F_BEATS | F_INTERVALS | F_WAVE;
+  } else {
+    int nRaw = nPeaks - 1;
+    for (int i = 0; i < nRaw; i++) gRaw[i] = (gPos[i + 1] - gPos[i]) * DT_MS;
+    float med = medianOf(gRaw, nRaw);
+    double sum = 0;
+    int nNN = 0;
+    for (int i = 0; i < nRaw; i++) {
+      gValid[i] = gRaw[i] >= 300 && gRaw[i] <= 1500 && fabsf(gRaw[i] - med) <= 0.25f * med;
+      if (gValid[i]) { sum += gRaw[i]; nNN++; }
+    }
+    r.nNN = nNN;
+    if (nNN >= 3) {
+      float mean = (float)(sum / nNN);
+      double sq = 0;
+      for (int i = 0; i < nRaw; i++) if (gValid[i]) sq += (gRaw[i] - mean) * (gRaw[i] - mean);
+      r.sdnn = (float)sqrt(sq / (nNN - 1));
+      r.hr = 60000.0f / mean;
+      // Cross-check against the autocorrelation rate: a mismatch means peaks were mis-detected
+      if (fabsf(r.hr - hrAuto) > 0.2f * hrAuto) r.failMask |= F_INTERVALS;
+      double ds = 0;
+      int nd = 0;
+      for (int i = 0; i < nRaw - 1; i++)
+        if (gValid[i] && gValid[i + 1]) { float d = gRaw[i + 1] - gRaw[i]; ds += d * d; nd++; }
+      r.rmssd = (nd >= 10) ? (float)sqrt(ds / nd) : NAN;
+    }
+    if (nNN < NN_MIN || nNN < KEEP_FRAC_MIN * nRaw || isnan(r.rmssd)) r.failMask |= F_INTERVALS;
+    if (nPeaks < NN_MIN + 1) r.failMask |= F_BEATS;
+
+    // ---- Waveform morphology on the IR pulse ----
+    int nM = 0, nB = 0;
+    const int S = 3;
+    for (int k = 1; k < nPeaks; k++) {
+      if (!gValid[k - 1]) continue;
+      int pk = (int)roundf(gPos[k]);
+      int back = (int)(0.7f * (gPos[k] - gPos[k - 1]));
+      int start = pk - back;
+      if (start < S + 1) start = S + 1;
+      int foot = start;
+      for (int i = start; i < pk; i++) if (fIr[i] < fIr[foot]) foot = i;
+      float amp = fIr[pk] - fIr[foot];
+      if (amp <= 0) continue;
+      float half = fIr[foot] + 0.5f * amp;
+
+      float tUp = NAN, tDn = NAN;
+      for (int i = foot + 1; i <= pk; i++)
+        if (fIr[i] >= half) { tUp = (i - 1) + (half - fIr[i - 1]) / (fIr[i] - fIr[i - 1]); break; }
+      int lim = pk + 80 > N - 2 ? N - 2 : pk + 80;
+      for (int i = pk + 1; i <= lim; i++)
+        if (fIr[i] <= half) { tDn = (i - 1) + (fIr[i - 1] - half) / (fIr[i - 1] - fIr[i]); break; }
+      if (isnan(tUp) || isnan(tDn)) continue;
+
+      int Lb = (int)roundf(gPos[k] - gPos[k - 1]);
+      int endI = foot + Lb;
+      if (endI > N - 1) continue;
+      double area = 0;
+      for (int i = foot; i <= endI; i++) { float v = fIr[i] - fIr[foot]; if (v > 0) area += v; }
+
+      if (nM < MAX_BEATS) {
+        gRise[nM] = (gPos[k] - foot) * DT_MS;
+        gW50[nM]  = (tDn - tUp) * DT_MS;
+        gArea[nM] = (float)(area / (amp * (Lb + 1)));
+        nM++;
+      }
+
+      // Second derivative (acceleration plethysmogram): b/a ratio
+      int aIdx = foot;
+      float aV = -1e30f;
+      for (int i = foot; i <= pk; i++) {
+        float d2 = fIr[i + S] - 2 * fIr[i] + fIr[i - S];
+        if (d2 > aV) { aV = d2; aIdx = i; }
+      }
+      int bEnd = aIdx + 25 > N - 1 - S ? N - 1 - S : aIdx + 25;
+      float bV = 1e30f;
+      for (int i = aIdx; i <= bEnd; i++) {
+        float d2 = fIr[i + S] - 2 * fIr[i] + fIr[i - S];
+        if (d2 < bV) bV = d2;
+      }
+      if (aV > 0 && bV < 0 && nB < MAX_BEATS) gBA[nB++] = bV / aV;
+    }
+    if (nM >= WAVE_MIN) {
+      r.rise = medianOf(gRise, nM);
+      r.width50 = medianOf(gW50, nM);
+      r.areaNorm = medianOf(gArea, nM);
+    } else r.failMask |= F_WAVE;
+    if (nB >= BA_MIN) r.ba = medianOf(gBA, nB);
+    else r.failMask |= F_WAVE;
+  }
+
+  r.ok = (r.failMask == 0);
+
+  // ---- Hb estimate (sex-specific baseline + optical corrections) ----
+  if (subjectSex != SEX_UNSET) {
+    float feat[K] = { r.dcRatio, r.Rred, r.Rir, r.Rratio, r.pi, r.hr,
+                      r.rmssd, r.rise, r.width50, r.areaNorm, r.ba, r.delayMs };
+    bool finite = true;
+    for (int k = 0; k < K; k++) if (isnan(feat[k])) finite = false;
+    float prior;
+    float hb = computeHb(feat, prior);
+    r.prior = prior;
+    if (MODEL_CALIBRATED && r.ok && finite) r.hb = hb;
+  }
+  return r;
+}
