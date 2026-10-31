@@ -3,6 +3,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <math.h>
+#include <LittleFS.h>
 
 #define SDA_PIN    21
 #define SCL_PIN    22
@@ -584,6 +585,9 @@ void setSex(int s) {
 void processCmd(String s) {
   s.trim();
   if (s.length() == 0) return;
+  if (s.equalsIgnoreCase("dump"))  { dumpFile();  return; }
+  if (s.equalsIgnoreCase("clear")) { clearFile(); return; }
+  if (s.equalsIgnoreCase("space")) { spaceInfo(); return; }
   char c = tolower(s[0]);
   if (c == 'm') setSex(SEX_MALE);
   else if (c == 'f') setSex(SEX_FEMALE);
@@ -591,7 +595,7 @@ void processCmd(String s) {
   else if (c == 'i') { subjectId = s.substring(1); subjectId.trim(); refHb = NAN;
                        Serial.printf("Subject ID: %s (reference Hb cleared)\n", subjectId.c_str()); showWait(); }
   else if (c == 'x') { refHb = NAN; Serial.println("Reference Hb cleared"); }
-  else Serial.println("Commands: m | f | r<Hb> | i<ID> | x");
+  else Serial.println("Commands: m | f | r<Hb> | i<ID> | x | dump | clear | space");
 }
 
 void handleSerial() {
