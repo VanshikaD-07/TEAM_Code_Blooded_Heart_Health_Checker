@@ -7,6 +7,7 @@
 #define SDA_PIN    21
 #define SCL_PIN    22
 #define BUTTON_PIN 4
+#define CSV_PATH   "/hb_data.csv"
 
 MAX30105 sensor;
 Adafruit_SSD1306 oled(128, 64, &Wire, -1);
@@ -383,6 +384,7 @@ Result analyze() {
 // =====================================================================
 // Output
 // =====================================================================
+
 void printFailReasons(uint16_t m) {
   if (m & F_DC)        Serial.println("  - DC level out of range: adjust AMP_RED/AMP_IR or finger contact");
   if (m & F_PERF)      Serial.println("  - Pulse too weak (perfusion index low): warm finger, lighter pressure");
@@ -394,34 +396,72 @@ void printFailReasons(uint16_t m) {
   if (m & F_WAVE)      Serial.println("  - Not enough clean beats for waveform features");
 }
 
-void csvNum(float v, int dec, bool last = false) {
-  if (!isnan(v)) Serial.print(v, dec);
-  if (!last) Serial.print(',');
+const char *CSV_HEADER =
+    "id,sex,ref_hb,ts_ms,quality_ok,fail_mask,hr_bpm,rmssd_ms,sdnn_ms,spo2,pi_pct,"
+    "red_dc,ir_dc,dc_ratio,R_red,R_ir,R_ratio,rise_ms,width50_ms,area_norm,ba_ratio,"
+    "delay_ms,snr,corr,drift_pct,n_beats,n_nn,hb_est";
+
+bool fsReady = false;
+
+void addNum(String &s, float v, int dec, bool last = false) {
+  if (!isnan(v)) s += String(v, dec);
+  if (!last) s += ',';
 }
 
-void printCsvHeader() {
-  Serial.println("id,sex,ref_hb,ts_ms,quality_ok,fail_mask,hr_bpm,rmssd_ms,sdnn_ms,spo2,pi_pct,"
-                 "red_dc,ir_dc,dc_ratio,R_red,R_ir,R_ratio,rise_ms,width50_ms,area_norm,ba_ratio,"
-                 "delay_ms,snr,corr,drift_pct,n_beats,n_nn,hb_est");
+String csvRow(const Result &r) {
+  String s = subjectId;
+  s += ',';
+  s += sexChar(); s += ',';
+  addNum(s, refHb, 1);
+  s += String(millis()); s += ',';
+  s += String(r.ok ? 1 : 0); s += ',';
+  s += String(r.failMask); s += ',';
+  addNum(s, r.hr, 1); addNum(s, r.rmssd, 1); addNum(s, r.sdnn, 1); addNum(s, r.spo2, 1); addNum(s, r.pi, 3);
+  addNum(s, r.redDc, 0); addNum(s, r.irDc, 0); addNum(s, r.dcRatio, 4);
+  addNum(s, r.Rred, 5); addNum(s, r.Rir, 5); addNum(s, r.Rratio, 4);
+  addNum(s, r.rise, 1); addNum(s, r.width50, 1); addNum(s, r.areaNorm, 4); addNum(s, r.ba, 4);
+  addNum(s, r.delayMs, 1); addNum(s, r.snr, 1); addNum(s, r.corr, 3); addNum(s, r.drift, 2);
+  s += String(r.nBeats); s += ',';
+  s += String(r.nNN); s += ',';
+  addNum(s, r.hb, 2, true);
+  return s;
 }
 
-void printCsvRow(const Result &r) {
-  Serial.print(subjectId); Serial.print(',');
-  Serial.print(sexChar()); Serial.print(',');
-  csvNum(refHb, 1);
-  Serial.print(millis()); Serial.print(',');
-  Serial.print(r.ok ? 1 : 0); Serial.print(',');
-  Serial.print(r.failMask); Serial.print(',');
-  csvNum(r.hr, 1); csvNum(r.rmssd, 1); csvNum(r.sdnn, 1); csvNum(r.spo2, 1); csvNum(r.pi, 3);
-  csvNum(r.redDc, 0); csvNum(r.irDc, 0); csvNum(r.dcRatio, 4);
-  csvNum(r.Rred, 5); csvNum(r.Rir, 5); csvNum(r.Rratio, 4);
-  csvNum(r.rise, 1); csvNum(r.width50, 1); csvNum(r.areaNorm, 4); csvNum(r.ba, 4);
-  csvNum(r.delayMs, 1); csvNum(r.snr, 1); csvNum(r.corr, 3); csvNum(r.drift, 2);
-  Serial.print(r.nBeats); Serial.print(',');
-  Serial.print(r.nNN); Serial.print(',');
-  csvNum(r.hb, 2, true);
-  Serial.println();
+// Append one row to the ESP32's flash file (header is written when the file is created)
+void saveRow(const String &row) {
+  if (!fsReady) { Serial.println("(flash not available: row not saved on board)"); return; }
+  bool isNew = !LittleFS.exists(CSV_PATH);
+  File f = LittleFS.open(CSV_PATH, FILE_APPEND);
+  if (!f) { Serial.println("(flash write failed)"); return; }
+  if (isNew) f.println(CSV_HEADER);
+  f.println(row);
+  f.close();
+  Serial.println("(saved to ESP32 flash: type 'dump' to print the file)");
 }
+
+// Print the whole saved file to the Serial Monitor (or to log_serial.py, which saves it on your laptop)
+void dumpFile() {
+  if (!fsReady || !LittleFS.exists(CSV_PATH)) { Serial.println("No saved data yet."); return; }
+  File f = LittleFS.open(CSV_PATH, FILE_READ);
+  Serial.println("----- BEGIN hb_data.csv -----");
+  while (f.available()) Serial.write(f.read());
+  Serial.println("----- END hb_data.csv -----");
+  f.close();
+}
+
+void clearFile() {
+  if (fsReady && LittleFS.exists(CSV_PATH)) LittleFS.remove(CSV_PATH);
+  Serial.println("Saved data cleared.");
+}
+
+void spaceInfo() {
+  if (!fsReady) { Serial.println("Flash not available."); return; }
+  Serial.printf("Flash file system: %u of %u bytes used\n",
+                (unsigned)LittleFS.usedBytes(), (unsigned)LittleFS.totalBytes());
+}
+
+
+void printCsvHeader() { Serial.println(CSV_HEADER); }
 
 void printReport(const Result &r) {
   if (PRETTY_PRINT) {
@@ -479,7 +519,7 @@ void printReport(const Result &r) {
     Serial.println("Screening aid only, not a diagnosis.");
     Serial.println("\nCSV row:");
   }
-  if (r.ok || LOG_FAILED_ROWS) printCsvRow(r);
+  if (r.ok || LOG_FAILED_ROWS) { String row = csvRow(r); Serial.println(row); saveRow(row); }
   else if (PRETTY_PRINT) Serial.println("(row not logged: quality failed)");
 }
 
@@ -587,7 +627,9 @@ void setup() {
   sensor.setPulseAmplitudeRed(AMP_RED);
   sensor.setPulseAmplitudeIR(AMP_IR);
 
-  Serial.println("Hb screening prototype ready. Commands: m | f | r<Hb> | i<ID> | x");
+  fsReady = LittleFS.begin(true);   // true = format on first use
+  if (!fsReady) Serial.println("LittleFS mount failed: rows will only print to serial");
+  Serial.println("Hb screening prototype ready. Commands: m | f | r<Hb> | i<ID> | x | dump | clear | space");
   printCsvHeader();
   showWait();
 }
