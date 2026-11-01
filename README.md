@@ -14,3 +14,5 @@ Team Name: Code Blooded
 Number of Members: 2
 Member 1: Vanshika Dhand, 9599326013, dhandvanshika108@gmail.com
 Member 2: Harshleen Kaur, 9818067848, harshleenkaur2007@gmail.com
+
+PPT link: https://docs.google.com/presentation/d/14NMUalEfD7s0KYb5BK0PJwjrHzmU-Mz8JJzNAbWNs2E/edit?usp=sharing
