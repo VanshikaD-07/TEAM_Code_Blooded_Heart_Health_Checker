@@ -17,3 +17,5 @@ Member 2: Harshleen Kaur, 9818067848, harshleenkaur2007@gmail.com, registration 
 
 PPT link: https://docs.google.com/presentation/d/14NMUalEfD7s0KYb5BK0PJwjrHzmU-Mz8JJzNAbWNs2E/edit?usp=sharing
 Demo video: https://drive.google.com/file/d/1VGMDGXfM2zlFHxaTovXqJbtjl43vQcwj/view?usp=sharing
+
+<img width="1022" height="528" alt="image" src="https://github.com/user-attachments/assets/3d7727a0-88d7-4822-89e8-bc957a246644" />
