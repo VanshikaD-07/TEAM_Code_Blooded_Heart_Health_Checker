@@ -9,3 +9,8 @@ Solution:
 India needs a needle free way to screen and monitor heart health so we can bridge the gap in healthcare and reach the last mile, That is where our HEART HEALTH CHECKER comes in.
 Our device consists of a max30102 sensor that provides screening based on ppg technology by calculating the interference between hemoglobin and red and infrared waveforms to provide accurate data to user.
 The device provides readings of SpO2, HRV(heart rate variability), bpm, waveform and hemoglobin to user instantly, eliminating the need for costly lab kits and providing a quick, easy and painless diagnostic method.
+
+Team Name: Code Blooded
+Number of Members: 2
+Member 1: Vanshika Dhand, 9599326013, dhandvanshika108@gmail.com
+Member 2: Harshleen Kaur, 9818067848, harshleenkaur2007@gmail.com
